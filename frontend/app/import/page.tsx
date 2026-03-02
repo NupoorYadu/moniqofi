@@ -123,7 +123,7 @@ export default function ImportPage() {
       try { data = await res.json(); } catch { /* non-JSON */ }
       if (res.status === 401) { router.push("/login"); return; }
       if (!res.ok) { setError((data.message as string) || "Import failed"); return; }
-      setSavedCount((data.saved as number) ?? 0);
+      setSavedCount((data.inserted as number) ?? (data.saved as number) ?? 0);
       setStage("done");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";

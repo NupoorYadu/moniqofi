@@ -18,6 +18,8 @@ exports.uploadMiddleware = upload.single("file");
 const MONTH_MAP = {
   jan:0, feb:1, mar:2, apr:3, may:4, jun:5,
   jul:6, aug:7, sep:8, oct:9, nov:10, dec:11,
+  january:0, february:1, march:2, april:3, june:5,
+  july:6, august:7, september:8, october:9, november:10, december:11,
 };
 
 function parseDate(raw) {
@@ -46,8 +48,8 @@ function parseDate(raw) {
     return isNaN(d) ? null : d.toISOString().slice(0,10);
   }
 
-  // MMM DD, YYYY  (e.g. "Feb 28, 2026")
-  m = s.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})$/);
+  // MMM DD, YYYY  (e.g. "Feb 28, 2026" or "February 28, 2026")
+  m = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/);
   if (m) {
     const mo = MONTH_MAP[m[1].toLowerCase()];
     if (mo !== undefined) {
@@ -56,8 +58,8 @@ function parseDate(raw) {
     }
   }
 
-  // DD MMM YYYY  (e.g. "28 Feb 2026")
-  m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
+  // DD MMM YYYY  (e.g. "28 Feb 2026" or "28 February 2026")
+  m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/);
   if (m) {
     const mo = MONTH_MAP[m[2].toLowerCase()];
     if (mo !== undefined) {
@@ -66,8 +68,8 @@ function parseDate(raw) {
     }
   }
 
-  // DD-MMM-YYYY  (e.g. "28-Feb-2026")
-  m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+  // DD-MMM-YYYY  (e.g. "28-Feb-2026" or "28-February-2026")
+  m = s.match(/^(\d{1,2})-([A-Za-z]{3,9})-(\d{4})$/);
   if (m) {
     const mo = MONTH_MAP[m[2].toLowerCase()];
     if (mo !== undefined) {
@@ -76,8 +78,8 @@ function parseDate(raw) {
     }
   }
 
-  // MMM-DD-YYYY or MMM DD YYYY
-  m = s.match(/^([A-Za-z]{3})[\s\-](\d{1,2})[\s\-,]*(\d{4})$/);
+  // MMM-DD-YYYY or MMM DD YYYY (with full month support)
+  m = s.match(/^([A-Za-z]{3,9})[\s\-](\d{1,2})[\s\-,]*(\d{4})$/);
   if (m) {
     const mo = MONTH_MAP[m[1].toLowerCase()];
     if (mo !== undefined) {
@@ -101,16 +103,31 @@ function parseAmount(s) {
   return parseFloat(s.replace(/[₹$£€,\s]/g, "")) || 0;
 }
 
+// Pick best amount: prefer ₹-prefixed, then decimal, then any
+function extractBestAmount(amounts) {
+  if (!amounts || !amounts.length) return null;
+  const withSymbol = amounts.filter((a) => /[₹$£€]/.test(a));
+  if (withSymbol.length) return withSymbol[withSymbol.length - 1];
+  const withDecimal = amounts.filter((a) => /\.\d{1,2}$/.test(a));
+  if (withDecimal.length) return withDecimal[withDecimal.length - 1];
+  // Only use bare integers if they look like money (≤8 digits, no UTR/ref-length numbers)
+  const moneyLike = amounts.filter((a) => {
+    const clean = a.replace(/[,\s]/g, "");
+    return clean.length <= 8;
+  });
+  return moneyLike.length ? moneyLike[moneyLike.length - 1] : null;
+}
+
 function normaliseTransaction(date, desc, amtStr, typeHint) {
   const amt = parseAmount(amtStr);
-  if (!date || !amt) return null;
-  let type = "debit";
+  if (!date || !amt || amt > 10_000_000) return null; // filter absurd amounts (UTR numbers)
+  let type = "expense";
   if (typeHint) {
-    if (CR_KEYWORDS.test(typeHint)) type = "credit";
+    if (CR_KEYWORDS.test(typeHint)) type = "income";
   } else if (CR_KEYWORDS.test(desc)) {
-    type = "credit";
+    type = "income";
   }
-  return { date, description: desc.trim(), amount: amt, type };
+  return { date, title: desc.trim(), amount: amt, type };
 }
 
 // ======================================================================
@@ -130,7 +147,7 @@ function cleanDesc(raw) {
 // Date appears at start of each transaction line
 // ======================================================================
 function strategyLineStart(text) {
-  const DATE_SOL = /^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{2}-\d{2}|[A-Za-z]{3}[\s\-]\d{1,2}[\s\-,]*\d{4}|\d{1,2}[\s\-][A-Za-z]{3}[\s\-]\d{4})/;
+  const DATE_SOL = /^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{2}-\d{2}|[A-Za-z]{3,9}[\s\-]\d{1,2}[\s\-,]*\d{4}|\d{1,2}[\s\-][A-Za-z]{3,9}[\s\-]\d{4})/;;
   const results = [];
   for (const line of text.split("\n")) {
     const m = line.match(DATE_SOL);
@@ -139,8 +156,8 @@ function strategyLineStart(text) {
     if (!date) continue;
     const rest = line.slice(m[0].length).trim();
     const amounts = rest.match(AMOUNT_RE) || [];
-    if (!amounts.length) continue;
-    const amtStr = amounts[amounts.length - 1];
+    const amtStr = extractBestAmount(amounts);
+    if (!amtStr) continue;
     const desc = cleanDesc(rest.replace(amtStr, ""));
     const typeHint = rest;
     const tx = normaliseTransaction(date, desc, amtStr, typeHint);
@@ -155,7 +172,7 @@ function strategyLineStart(text) {
 // ======================================================================
 function strategyBlockDate(text) {
   // Match a standalone date line
-  const DATE_LINE = /^[\s]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{2}-\d{2}|[A-Za-z]{3}\s+\d{1,2},?\s+\d{4}|\d{1,2}[\s\-][A-Za-z]{3}[\s\-]\d{4})[\s]*$/;
+  const DATE_LINE = /^[\s]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{2}-\d{2}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}|\d{1,2}[\s\-][A-Za-z]{3,9}[\s\-]\d{4})[\s]*$/;;
   const lines = text.split("\n");
   const results = [];
   let i = 0;
@@ -173,8 +190,8 @@ function strategyBlockDate(text) {
         }
         const blockText = block.join(" ");
         const amounts = blockText.match(AMOUNT_RE) || [];
-        if (amounts.length) {
-          const amtStr = amounts[amounts.length - 1];
+        const amtStr = extractBestAmount(amounts);
+        if (amtStr) {
           const desc = cleanDesc(blockText.replace(amtStr, ""));
           const tx = normaliseTransaction(date, desc, amtStr, blockText);
           if (tx) results.push(tx);
@@ -196,9 +213,9 @@ function strategyGlobalScan(text) {
   const DATE_PATTERNS = [
     /\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b/g,
     /\b(\d{4}-\d{2}-\d{2})\b/g,
-    /\b([A-Za-z]{3}\s+\d{1,2},?\s+\d{4})\b/g,
-    /\b(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\b/g,
-    /\b(\d{1,2}-[A-Za-z]{3}-\d{4})\b/g,
+    /\b([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\b/g,
+    /\b(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})\b/g,
+    /\b(\d{1,2}-[A-Za-z]{3,9}-\d{4})\b/g,
   ];
   const hits = [];
   for (const re of DATE_PATTERNS) {
@@ -218,8 +235,8 @@ function strategyGlobalScan(text) {
     const nextPos = idx + 1 < hits.length ? hits[idx+1].pos : text.length;
     const snippet = text.slice(end, Math.min(end + 300, nextPos));
     const amounts = snippet.match(AMOUNT_RE) || [];
-    if (!amounts.length) continue;
-    const amtStr = amounts[amounts.length - 1];
+    const amtStr = extractBestAmount(amounts);
+    if (!amtStr) continue;
     const desc = cleanDesc(snippet.replace(amtStr, ""));
     const key = `${date}|${parseAmount(amtStr)}`;
     if (seen.has(key)) continue;
@@ -286,22 +303,22 @@ function parseXLSX(buffer) {
       const cKey = Object.keys(row).find(k=>k.toLowerCase().trim()===creditCol);
       const dVal = parseAmount(String(row[dKey] || ""));
       const cVal = parseAmount(String(row[cKey] || ""));
-      if (cVal > 0) { rawAmt = String(cVal); type = "credit"; }
-      else if (dVal > 0) { rawAmt = String(dVal); type = "debit"; }
+      if (cVal > 0) { rawAmt = String(cVal); type = "income"; }
+      else if (dVal > 0) { rawAmt = String(dVal); type = "expense"; }
     } else if (amtCol) {
       const aKey = Object.keys(row).find(k=>k.toLowerCase().trim()===amtCol);
       rawAmt = String(row[aKey] || "");
       if (typeCol) {
         const tKey = Object.keys(row).find(k=>k.toLowerCase().trim()===typeCol);
         const tv = String(row[tKey] || "");
-        if (CR_KEYWORDS.test(tv)) type = "credit";
+        type = CR_KEYWORDS.test(tv) ? "income" : "expense";
       }
     }
 
     const date = parseDate(rawDate);
     const amt  = parseAmount(rawAmt);
     if (!date || !amt) continue;
-    parsed.push({ date, description: rawDesc.trim(), amount: amt, type });
+    parsed.push({ date, title: rawDesc.trim(), amount: amt, type });
   }
   return parsed.length > 0 ? { parsed, headers: Object.keys(rows[0]) } : null;
 }
@@ -337,17 +354,17 @@ function parseCSVBuffer(buffer) {
     if (debitIdx >= 0 && creditIdx >= 0) {
       const dVal = parseAmount(row[debitIdx] || "");
       const cVal = parseAmount(row[creditIdx] || "");
-      if (cVal > 0) { rawAmt = String(cVal); type = "credit"; }
-      else if (dVal > 0) { rawAmt = String(dVal); type = "debit"; }
+      if (cVal > 0) { rawAmt = String(cVal); type = "income"; }
+      else if (dVal > 0) { rawAmt = String(dVal); type = "expense"; }
     } else if (amtIdx >= 0) {
       rawAmt = row[amtIdx] || "";
-      if (typeIdx >= 0 && CR_KEYWORDS.test(row[typeIdx] || "")) type = "credit";
+      if (typeIdx >= 0 && CR_KEYWORDS.test(row[typeIdx] || "")) type = "income";
     }
 
     const date = parseDate(rawDate);
     const amt  = parseAmount(rawAmt);
     if (!date || !amt) continue;
-    parsed.push({ date, description: rawDesc.trim(), amount: amt, type });
+    parsed.push({ date, title: rawDesc.trim(), amount: amt, type });
   }
   return parsed.length > 0 ? { parsed, headers: rows[0] } : null;
 }
@@ -412,6 +429,7 @@ exports.previewImport = async (req, res) => {
       return res.json({ bank: "CSV Import", total: csvResult.parsed.length, headers: csvResult.headers, transactions: csvResult.parsed });
     }
 
+
     return res.status(400).json({ message: "Could not detect file format. Please upload a PDF, Excel (.xlsx), or CSV file." });
   } catch (err) {
     console.error("previewImport error:", err);
@@ -437,17 +455,18 @@ exports.confirmImport = async (req, res) => {
   try {
     await client.query("BEGIN");
     for (const tx of transactions) {
-      const { date, description, amount, type, category } = tx;
+      const { date, title, description, amount, type, category } = tx;
+      const desc = title || description || "";
       if (!date || !amount) { skipped++; continue; }
       await client.query(
         `INSERT INTO transactions (user_id, date, description, amount, type, category)
          VALUES ($1,$2,$3,$4,$5,$6)`,
-        [userId, date, description || "", parseFloat(amount), type || "debit", category || "Uncategorized"]
+        [userId, date, desc, parseFloat(amount), type || "expense", category || "Uncategorized"]
       );
       inserted++;
     }
     await client.query("COMMIT");
-    res.json({ message: `Imported ${inserted} transaction(s).`, inserted, skipped });
+    res.json({ message: `Imported ${inserted} transaction(s).`, inserted, saved: inserted, skipped });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("confirmImport error:", err);
