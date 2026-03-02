@@ -9,4 +9,451 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (_req, _file, cb) => cb(null, true),
 });
+
+exports.uploadMiddleware = upload.single("file");
+
+// ======================================================================
+// DATE PARSING
+// ======================================================================
+const MONTH_MAP = {
+  jan:0, feb:1, mar:2, apr:3, may:4, jun:5,
+  jul:6, aug:7, sep:8, oct:9, nov:10, dec:11,
+};
+
+function parseDate(raw) {
+  if (!raw) return null;
+  const s = raw.trim();
+
+  // DD/MM/YYYY or DD-MM-YYYY
+  let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) {
+    const d = new Date(+m[3], +m[2]-1, +m[1]);
+    return isNaN(d) ? null : d.toISOString().slice(0,10);
+  }
+
+  // YYYY-MM-DD
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const d = new Date(+m[1], +m[2]-1, +m[3]);
+    return isNaN(d) ? null : d.toISOString().slice(0,10);
+  }
+
+  // DD/MM/YY
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/);
+  if (m) {
+    const yr = +m[3] < 50 ? 2000 + +m[3] : 1900 + +m[3];
+    const d = new Date(yr, +m[2]-1, +m[1]);
+    return isNaN(d) ? null : d.toISOString().slice(0,10);
+  }
+
+  // MMM DD, YYYY  (e.g. "Feb 28, 2026")
+  m = s.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (m) {
+    const mo = MONTH_MAP[m[1].toLowerCase()];
+    if (mo !== undefined) {
+      const d = new Date(+m[3], mo, +m[2]);
+      return isNaN(d) ? null : d.toISOString().slice(0,10);
+    }
+  }
+
+  // DD MMM YYYY  (e.g. "28 Feb 2026")
+  m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
+  if (m) {
+    const mo = MONTH_MAP[m[2].toLowerCase()];
+    if (mo !== undefined) {
+      const d = new Date(+m[3], mo, +m[1]);
+      return isNaN(d) ? null : d.toISOString().slice(0,10);
+    }
+  }
+
+  // DD-MMM-YYYY  (e.g. "28-Feb-2026")
+  m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+  if (m) {
+    const mo = MONTH_MAP[m[2].toLowerCase()];
+    if (mo !== undefined) {
+      const d = new Date(+m[3], mo, +m[1]);
+      return isNaN(d) ? null : d.toISOString().slice(0,10);
+    }
+  }
+
+  // MMM-DD-YYYY or MMM DD YYYY
+  m = s.match(/^([A-Za-z]{3})[\s\-](\d{1,2})[\s\-,]*(\d{4})$/);
+  if (m) {
+    const mo = MONTH_MAP[m[1].toLowerCase()];
+    if (mo !== undefined) {
+      const d = new Date(+m[3], mo, +m[2]);
+      return isNaN(d) ? null : d.toISOString().slice(0,10);
+    }
+  }
+
+  return null;
+}
+
+// ======================================================================
+// AMOUNT HELPERS
+// ======================================================================
+const AMOUNT_RE = /[₹$£€]?\s*[\d,]+(?:\.\d{1,2})?/g;
+const DR_KEYWORDS = /\b(DR|DEBIT|debit|dr|withdrawal|withdrawl|paid|sent|debited)\b/i;
+const CR_KEYWORDS = /\b(CR|CREDIT|credit|cr|deposit|received|credited)\b/i;
+
+function parseAmount(s) {
+  if (!s) return 0;
+  return parseFloat(s.replace(/[₹$£€,\s]/g, "")) || 0;
+}
+
+function normaliseTransaction(date, desc, amtStr, typeHint) {
+  const amt = parseAmount(amtStr);
+  if (!date || !amt) return null;
+  let type = "debit";
+  if (typeHint) {
+    if (CR_KEYWORDS.test(typeHint)) type = "credit";
+  } else if (CR_KEYWORDS.test(desc)) {
+    type = "credit";
+  }
+  return { date, description: desc.trim(), amount: amt, type };
+}
+
+// ======================================================================
+// DESCRIPTION CLEANER
+// ======================================================================
+function cleanDesc(raw) {
+  return raw
+    .replace(/\b(Transaction\s*ID|UTR\s*No\.?|Paid\s*by|Ref\s*No\.?|Reference\s*No\.?)\s*[:\-]?\s*[\w\d]+/gi, "")
+    .replace(/\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM)?/gi, "")
+    .replace(/[₹$£€]\s*[\d,]+(?:\.\d{1,2})?/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+// ======================================================================
+// STRATEGY 1 — LINE-START DATE (HDFC, SBI, ICICI, Axis)
+// Date appears at start of each transaction line
+// ======================================================================
+function strategyLineStart(text) {
+  const DATE_SOL = /^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{2}-\d{2}|[A-Za-z]{3}[\s\-]\d{1,2}[\s\-,]*\d{4}|\d{1,2}[\s\-][A-Za-z]{3}[\s\-]\d{4})/;
+  const results = [];
+  for (const line of text.split("\n")) {
+    const m = line.match(DATE_SOL);
+    if (!m) continue;
+    const date = parseDate(m[1]);
+    if (!date) continue;
+    const rest = line.slice(m[0].length).trim();
+    const amounts = rest.match(AMOUNT_RE) || [];
+    if (!amounts.length) continue;
+    const amtStr = amounts[amounts.length - 1];
+    const desc = cleanDesc(rest.replace(amtStr, ""));
+    const typeHint = rest;
+    const tx = normaliseTransaction(date, desc, amtStr, typeHint);
+    if (tx) results.push(tx);
+  }
+  return results;
+}
+
+// ======================================================================
+// STRATEGY 2 — BLOCK/DATE-ON-OWN-LINE (PhonePe, GPay, Paytm UPI)
+// Date appears on its own line; description and amount follow
+// ======================================================================
+function strategyBlockDate(text) {
+  // Match a standalone date line
+  const DATE_LINE = /^[\s]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}-\d{2}-\d{2}|[A-Za-z]{3}\s+\d{1,2},?\s+\d{4}|\d{1,2}[\s\-][A-Za-z]{3}[\s\-]\d{4})[\s]*$/;
+  const lines = text.split("\n");
+  const results = [];
+  let i = 0;
+  while (i < lines.length) {
+    const dateLine = lines[i].trim();
+    const mDate = dateLine.match(DATE_LINE);
+    if (mDate) {
+      const date = parseDate(mDate[1]);
+      if (date) {
+        // Collect next 1-5 lines as the block
+        const block = [];
+        for (let j = i+1; j < Math.min(i+6, lines.length); j++) {
+          if (lines[j].trim().match(DATE_LINE)) break;
+          block.push(lines[j]);
+        }
+        const blockText = block.join(" ");
+        const amounts = blockText.match(AMOUNT_RE) || [];
+        if (amounts.length) {
+          const amtStr = amounts[amounts.length - 1];
+          const desc = cleanDesc(blockText.replace(amtStr, ""));
+          const tx = normaliseTransaction(date, desc, amtStr, blockText);
+          if (tx) results.push(tx);
+        }
+        i++;
+        continue;
+      }
+    }
+    i++;
+  }
+  return results;
+}
+
+// ======================================================================
+// STRATEGY 3 — GLOBAL SCAN (universal fallback)
+// Scan entire text for date occurrences and grab adjacent amounts
+// ======================================================================
+function strategyGlobalScan(text) {
+  const DATE_PATTERNS = [
+    /\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b/g,
+    /\b(\d{4}-\d{2}-\d{2})\b/g,
+    /\b([A-Za-z]{3}\s+\d{1,2},?\s+\d{4})\b/g,
+    /\b(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\b/g,
+    /\b(\d{1,2}-[A-Za-z]{3}-\d{4})\b/g,
+  ];
+  const hits = [];
+  for (const re of DATE_PATTERNS) {
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) {
+      const date = parseDate(m[1]);
+      if (date) hits.push({ pos: m.index, end: m.index + m[0].length, date });
+    }
+  }
+  hits.sort((a,b) => a.pos - b.pos);
+
+  const results = [];
+  const seen = new Set();
+  for (let idx = 0; idx < hits.length; idx++) {
+    const { pos, end, date } = hits[idx];
+    const nextPos = idx + 1 < hits.length ? hits[idx+1].pos : text.length;
+    const snippet = text.slice(end, Math.min(end + 300, nextPos));
+    const amounts = snippet.match(AMOUNT_RE) || [];
+    if (!amounts.length) continue;
+    const amtStr = amounts[amounts.length - 1];
+    const desc = cleanDesc(snippet.replace(amtStr, ""));
+    const key = `${date}|${parseAmount(amtStr)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const tx = normaliseTransaction(date, desc, amtStr, snippet);
+    if (tx) results.push(tx);
+  }
+  return results;
+}
+
+// ======================================================================
+// PDF PARSER — runs all 3 strategies, picks best
+// ======================================================================
+async function parsePDF(buffer) {
+  let data;
+  try {
+    data = await pdfParse(buffer);
+  } catch (e) {
+    throw new Error("Could not read PDF. Make sure it is not password-protected or image-only.");
+  }
+  const text = data.text;
+  if (!text || !text.trim()) {
+    throw new Error("This PDF appears to be scanned/image-based. Please export as CSV or Excel from your banking app.");
+  }
+
+  const strategies = [
+    strategyLineStart(text),
+    strategyBlockDate(text),
+    strategyGlobalScan(text),
+  ];
+  // Pick the strategy with the most results
+  strategies.sort((a,b) => b.length - a.length);
+  return strategies[0] || [];
+}
+
+// ======================================================================
+// EXCEL PARSER
+// ======================================================================
+function parseXLSX(buffer) {
+  const wb = XLSX.read(buffer, { type: "buffer", cellDates: true });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+  if (!rows.length) return null;
+
+  const headers = Object.keys(rows[0]).map(h => h.toLowerCase().trim());
+
+  // Try to find date, description, amount columns
+  const dateCol = headers.find(h => /date/.test(h));
+  const descCol = headers.find(h => /desc|narr|particular|detail|remark/.test(h));
+  const amtCol  = headers.find(h => /amount|amt|debit|credit/.test(h));
+  const typeCol = headers.find(h => /type|dr.*cr|cr.*dr|debit.*credit/.test(h));
+  const debitCol = headers.find(h => /\bdebit\b/.test(h) && h !== amtCol);
+  const creditCol = headers.find(h => /\bcredit\b/.test(h) && h !== amtCol);
+
+  const parsed = [];
+  for (const row of rows) {
+    const rawDate = dateCol ? String(row[Object.keys(row).find(k=>k.toLowerCase().trim()===dateCol)] || "") : "";
+    const rawDesc = descCol ? String(row[Object.keys(row).find(k=>k.toLowerCase().trim()===descCol)] || "") : Object.values(row).slice(1,3).join(" ");
+    let rawAmt = "";
+    let type = "debit";
+
+    if (debitCol && creditCol) {
+      const dKey = Object.keys(row).find(k=>k.toLowerCase().trim()===debitCol);
+      const cKey = Object.keys(row).find(k=>k.toLowerCase().trim()===creditCol);
+      const dVal = parseAmount(String(row[dKey] || ""));
+      const cVal = parseAmount(String(row[cKey] || ""));
+      if (cVal > 0) { rawAmt = String(cVal); type = "credit"; }
+      else if (dVal > 0) { rawAmt = String(dVal); type = "debit"; }
+    } else if (amtCol) {
+      const aKey = Object.keys(row).find(k=>k.toLowerCase().trim()===amtCol);
+      rawAmt = String(row[aKey] || "");
+      if (typeCol) {
+        const tKey = Object.keys(row).find(k=>k.toLowerCase().trim()===typeCol);
+        const tv = String(row[tKey] || "");
+        if (CR_KEYWORDS.test(tv)) type = "credit";
+      }
+    }
+
+    const date = parseDate(rawDate);
+    const amt  = parseAmount(rawAmt);
+    if (!date || !amt) continue;
+    parsed.push({ date, description: rawDesc.trim(), amount: amt, type });
+  }
+  return parsed.length > 0 ? { parsed, headers: Object.keys(rows[0]) } : null;
+}
+
+// ======================================================================
+// CSV / TXT PARSER
+// ======================================================================
+function parseCSVBuffer(buffer) {
+  const text = buffer.toString("utf-8");
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return null;
+
+  // Detect delimiter
+  const delim = lines[0].includes("\t") ? "\t" : ",";
+  const rows = lines.map(l => l.split(delim).map(c => c.replace(/^["']|["']$/g, "").trim()));
+  const headers = rows[0].map(h => h.toLowerCase());
+
+  const dateIdx  = headers.findIndex(h => /date/.test(h));
+  const descIdx  = headers.findIndex(h => /desc|narr|particular|detail/.test(h));
+  const amtIdx   = headers.findIndex(h => /amount|amt/.test(h));
+  const typeIdx  = headers.findIndex(h => /type|dr.*cr|cr.*dr/.test(h));
+  const debitIdx = headers.findIndex(h => /\bdebit\b/.test(h) && h !== headers[amtIdx]);
+  const creditIdx= headers.findIndex(h => /\bcredit\b/.test(h) && h !== headers[amtIdx]);
+
+  const parsed = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const rawDate = dateIdx >= 0 ? (row[dateIdx] || "") : "";
+    const rawDesc = descIdx >= 0 ? (row[descIdx] || "") : row.slice(1,3).join(" ");
+    let rawAmt = "";
+    let type = "debit";
+
+    if (debitIdx >= 0 && creditIdx >= 0) {
+      const dVal = parseAmount(row[debitIdx] || "");
+      const cVal = parseAmount(row[creditIdx] || "");
+      if (cVal > 0) { rawAmt = String(cVal); type = "credit"; }
+      else if (dVal > 0) { rawAmt = String(dVal); type = "debit"; }
+    } else if (amtIdx >= 0) {
+      rawAmt = row[amtIdx] || "";
+      if (typeIdx >= 0 && CR_KEYWORDS.test(row[typeIdx] || "")) type = "credit";
+    }
+
+    const date = parseDate(rawDate);
+    const amt  = parseAmount(rawAmt);
+    if (!date || !amt) continue;
+    parsed.push({ date, description: rawDesc.trim(), amount: amt, type });
+  }
+  return parsed.length > 0 ? { parsed, headers: rows[0] } : null;
+}
+
+// ======================================================================
+// CONTROLLER: PREVIEW
+// ======================================================================
+exports.previewImport = async (req, res) => {
+  try {
+    const buf = req.file && req.file.buffer;
+    if (!buf) return res.status(400).json({ message: "No file uploaded" });
+
+    const filename = (req.file.originalname || "").toLowerCase();
+    const mime     = (req.file.mimetype || "").toLowerCase();
+
+    const isPDF  = mime === "application/pdf" || filename.endsWith(".pdf");
+    const isXLSX = filename.endsWith(".xlsx") || filename.endsWith(".xls") || filename.endsWith(".ods") || mime.includes("spreadsheetml") || mime.includes("ms-excel");
+    const isCSV  = filename.endsWith(".csv") || filename.endsWith(".txt") || mime === "text/csv" || mime === "text/plain";
+
+    // ── PDF ──
+    if (isPDF) {
+      let txns;
+      try { txns = await parsePDF(buf); } catch (e) {
+        return res.status(400).json({ message: e.message });
+      }
+      if (!txns || txns.length === 0) {
+        return res.status(400).json({
+          message: "No transactions found in this PDF. The file may be scanned or image-based. Try exporting as CSV or Excel from your banking app.",
+        });
+      }
+      return res.json({ bank: "PDF Import", total: txns.length, headers: [], transactions: txns });
+    }
+
+    // ── Excel ──
+    if (isXLSX) {
+      const result = parseXLSX(buf);
+      if (!result || !result.parsed.length) {
+        return res.status(400).json({ message: "No transactions found in the Excel file. Make sure it contains date, description, and amount columns." });
+      }
+      return res.json({ bank: "Excel Import", total: result.parsed.length, headers: result.headers, transactions: result.parsed });
+    }
+
+    // ── CSV / TXT ──
+    if (isCSV) {
+      const result = parseCSVBuffer(buf);
+      if (!result || !result.parsed.length) {
+        return res.status(400).json({ message: "No transactions found. Make sure your CSV has headers like Date, Description, Amount." });
+      }
+      return res.json({ bank: "CSV Import", total: result.parsed.length, headers: result.headers, transactions: result.parsed });
+    }
+
+    // ── Unknown — try PDF then CSV as fallback ──
+    try {
+      const txns = await parsePDF(buf);
+      if (txns && txns.length > 0) {
+        return res.json({ bank: "PDF Import", total: txns.length, headers: [], transactions: txns });
+      }
+    } catch (_) {}
+
+    const csvResult = parseCSVBuffer(buf);
+    if (csvResult && csvResult.parsed.length > 0) {
+      return res.json({ bank: "CSV Import", total: csvResult.parsed.length, headers: csvResult.headers, transactions: csvResult.parsed });
+    }
+
+    return res.status(400).json({ message: "Could not detect file format. Please upload a PDF, Excel (.xlsx), or CSV file." });
+  } catch (err) {
+    console.error("previewImport error:", err);
+    res.status(500).json({ message: "Server error processing file." });
+  }
+};
+
+// ======================================================================
+// CONTROLLER: CONFIRM IMPORT
+// ======================================================================
+exports.confirmImport = async (req, res) => {
+  const userId = req.user && req.user.id;
+  if (!userId) return res.status(401).json({ message: "Unauthorised" });
+
+  const { transactions } = req.body;
+  if (!Array.isArray(transactions) || transactions.length === 0) {
+    return res.status(400).json({ message: "No transactions provided" });
+  }
+
+  let inserted = 0;
+  let skipped  = 0;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const tx of transactions) {
+      const { date, description, amount, type, category } = tx;
+      if (!date || !amount) { skipped++; continue; }
+      await client.query(
+        `INSERT INTO transactions (user_id, date, description, amount, type, category)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [userId, date, description || "", parseFloat(amount), type || "debit", category || "Uncategorized"]
+      );
+      inserted++;
+    }
+    await client.query("COMMIT");
+    res.json({ message: `Imported ${inserted} transaction(s).`, inserted, skipped });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("confirmImport error:", err);
+    res.status(500).json({ message: "Database error during import." });
+  } finally {
+    client.release();
+  }
+};
 exports.uploadMiddleware = upload.single("file");
