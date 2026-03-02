@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import MoniqoLogo from "../components/MoniqoLogo";
+import { API_BASE } from "../lib/api";
 
 export default function Register() {
   const [name, setName] = useState("");
@@ -15,6 +16,11 @@ export default function Register() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const router = useRouter();
+
+  // Warm up the Railway backend on page load
+  useEffect(() => {
+    fetch(`${API_BASE}/`, { method: "GET" }).catch(() => {/* ignore */});
+  }, []);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,7 +33,7 @@ export default function Register() {
 
     setLoading(true);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/register`, {
+      const res = await fetch(`${API_BASE}/api/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, email, password }),

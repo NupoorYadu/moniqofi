@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import MoniqoLogo from "../components/MoniqoLogo";
+import { API_BASE } from "../lib/api";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -14,28 +15,56 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const router = useRouter();
 
+  // Warm up the Railway backend on page load so cold-start doesn't hit on Sign In
+  useEffect(() => {
+    fetch(`${API_BASE}/`, { method: "GET" }).catch(() => {/* ignore */});
+  }, []);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError("");
+
+    const attemptLogin = async (): Promise<Response> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 25000); // 25s timeout
+      try {
+        const res = await fetch(`${API_BASE}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        return res;
+      } catch (err: unknown) {
+        clearTimeout(timer);
+        throw err;
+      }
+    };
+
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
+      let res: Response;
+      try {
+        res = await attemptLogin();
+      } catch {
+        // First attempt failed (cold start / timeout) — wait 4s and retry once
+        setError("Server is waking up, retrying…");
+        await new Promise((r) => setTimeout(r, 4000));
+        res = await attemptLogin();
+      }
+
       const data = await res.json();
       if (res.ok) {
         localStorage.setItem("token", data.token);
         router.push("/dashboard");
       } else if (data.requiresVerification) {
-        // Redirect to check-email page for unverified accounts
         router.push(`/check-email?email=${encodeURIComponent(data.email || email)}`);
       } else {
         setError(data.message || "Login failed");
       }
     } catch {
-      setError("Unable to connect to server");
+      setError("Unable to reach server. Check your internet and try again.");
     } finally {
       setLoading(false);
     }
