@@ -262,12 +262,16 @@ async function parsePDF(buffer) {
     throw new Error("This PDF appears to be scanned/image-based. Please export as CSV or Excel from your banking app.");
   }
 
-  const strategies = [
-    strategyLineStart(text),
-    strategyBlockDate(text),
-    strategyGlobalScan(text),
-  ];
-  // Pick the strategy with the most results
+  // Log first 1000 chars to Railway logs for debugging
+  console.log("[PDF DEBUG] Pages:", data.numpages, "Text length:", text.length);
+  console.log("[PDF DEBUG] First 1000 chars:", JSON.stringify(text.slice(0, 1000)));
+
+  const s1 = strategyLineStart(text);
+  const s2 = strategyBlockDate(text);
+  const s3 = strategyGlobalScan(text);
+  console.log("[PDF DEBUG] strategy results — lineStart:", s1.length, "blockDate:", s2.length, "globalScan:", s3.length);
+
+  const strategies = [s1, s2, s3];
   strategies.sort((a,b) => b.length - a.length);
   return strategies[0] || [];
 }
@@ -368,6 +372,33 @@ function parseCSVBuffer(buffer) {
   }
   return parsed.length > 0 ? { parsed, headers: rows[0] } : null;
 }
+
+// ======================================================================
+// DEBUG ENDPOINT — returns raw extracted text (no auth)
+// ======================================================================
+exports.debugPDF = async (req, res) => {
+  try {
+    const buf = req.file && req.file.buffer;
+    if (!buf) return res.status(400).json({ message: "No file uploaded" });
+    const data = await pdfParse(buf);
+    const text = data.text || "";
+    // Run all strategies and show counts
+    const s1 = strategyLineStart(text);
+    const s2 = strategyBlockDate(text);
+    const s3 = strategyGlobalScan(text);
+    res.json({
+      pages: data.numpages,
+      textLength: text.length,
+      rawText: text.slice(0, 3000),
+      strategies: { lineStart: s1.length, blockDate: s2.length, globalScan: s3.length },
+      sample_s1: s1.slice(0, 3),
+      sample_s2: s2.slice(0, 3),
+      sample_s3: s3.slice(0, 3),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
 
 // ======================================================================
 // CONTROLLER: PREVIEW
