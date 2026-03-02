@@ -5,19 +5,20 @@ import { useRouter } from "next/navigation";
 import Sidebar from "../components/Sidebar";
 import AnimatedBackground from "../components/AnimatedBackground";
 import { motion, AnimatePresence } from "framer-motion";
+import { API_BASE } from "../lib/api";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+const API = API_BASE;
 
 const CATEGORIES = ["Food","Transport","Shopping","Bills","Health","Entertainment","Education","EMI","Transfer","Investment","Insurance","Income","Other"];
 const BANKS = [
-  { name: "SBI",          logo: "🏦", hint: "Internet Banking → Accounts → Account Statement → Download CSV" },
-  { name: "HDFC Bank",    logo: "🔵", hint: "NetBanking → Accounts → Account Statement → Download CSV" },
-  { name: "ICICI Bank",   logo: "🟠", hint: "iMobile / NetBanking → Account Statement → Export as CSV" },
-  { name: "Axis Bank",    logo: "🟣", hint: "Internet Banking → Account Summary → View Statement → Download" },
-  { name: "Kotak Bank",   logo: "🔴", hint: "Net Banking → Accounts → Account Statement → Download" },
-  { name: "IndusInd",     logo: "🟢", hint: "IndusMobile → Accounts → Statement → Download CSV" },
-  { name: "Yes Bank",     logo: "⚫", hint: "YES Online → Accounts → Statement View → Download" },
-  { name: "PNB",          logo: "🏛️", hint: "PNB Online → My Account → View/Download Statement → CSV" },
+  { name: "SBI",          logo: "🏦", hint: "Internet Banking → Accounts → Account Statement → Download PDF or CSV" },
+  { name: "HDFC Bank",    logo: "🔵", hint: "NetBanking → Accounts → Account Statement → Download PDF or CSV" },
+  { name: "ICICI Bank",   logo: "🟠", hint: "iMobile / NetBanking → Account Statement → Export PDF or CSV" },
+  { name: "Axis Bank",    logo: "🟣", hint: "Internet Banking → Account Summary → View Statement → Download PDF or CSV" },
+  { name: "Kotak Bank",   logo: "🔴", hint: "Net Banking → Accounts → Account Statement → Download PDF or CSV" },
+  { name: "IndusInd",     logo: "🟢", hint: "IndusMobile → Accounts → Statement → Download PDF or CSV" },
+  { name: "Yes Bank",     logo: "⚫", hint: "YES Online → Accounts → Statement View → Download PDF or CSV" },
+  { name: "PNB",          logo: "🏛️", hint: "PNB Online → My Account → View/Download Statement → PDF or CSV" },
 ];
 
 interface ParsedRow {
@@ -49,26 +50,36 @@ export default function ImportPage() {
   // ── Upload CSV to /api/transactions/import/preview ──
   const uploadFile = useCallback(async (file: File) => {
     setError("");
+
+    const tk = token();
+    if (!tk) { router.push("/login"); return; }
+
     setUploading(true);
     const form = new FormData();
     form.append("file", file);
     try {
       const res = await fetch(`${API}/api/transactions/import/preview`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token()}` },
+        headers: { Authorization: `Bearer ${tk}` },
         body: form,
       });
-      const data = await res.json();
-      if (!res.ok) { setError(data.message || "Parse failed"); return; }
-      setDetectedBank(data.bank || "");
-      setRows(data.transactions.map((t: Omit<ParsedRow, "selected">) => ({ ...t, selected: true })));
+
+      let data: Record<string, unknown> = {};
+      try { data = await res.json(); } catch { /* non-JSON response */ }
+
+      if (res.status === 401) { router.push("/login"); return; }
+      if (!res.ok) { setError((data.message as string) || `Upload failed (${res.status})`); return; }
+
+      setDetectedBank((data.bank as string) || "");
+      setRows((data.transactions as Omit<ParsedRow, "selected">[]).map((t) => ({ ...t, selected: true })));
       setStage("preview");
-    } catch {
-      setError("Network error — is the backend running?");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setError(`Could not reach server: ${msg}`);
     } finally {
       setUploading(false);
     }
-  }, []);
+  }, [router]);
 
   // ── Drop handler ──
   const onDrop = (e: React.DragEvent) => {
@@ -98,20 +109,25 @@ export default function ImportPage() {
   // ── Confirm import ──
   const confirmImport = async () => {
     if (selectedRows.length === 0) return;
+    const tk = token();
+    if (!tk) { router.push("/login"); return; }
     setSaving(true);
     setError("");
     try {
       const res = await fetch(`${API}/api/transactions/import/confirm`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${tk}`, "Content-Type": "application/json" },
         body: JSON.stringify({ transactions: selectedRows }),
       });
-      const data = await res.json();
-      if (!res.ok) { setError(data.message || "Import failed"); return; }
-      setSavedCount(data.saved);
+      let data: Record<string, unknown> = {};
+      try { data = await res.json(); } catch { /* non-JSON */ }
+      if (res.status === 401) { router.push("/login"); return; }
+      if (!res.ok) { setError((data.message as string) || "Import failed"); return; }
+      setSavedCount((data.saved as number) ?? 0);
       setStage("done");
-    } catch {
-      setError("Network error");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setError(`Could not reach server: ${msg}`);
     } finally {
       setSaving(false);
     }
@@ -130,7 +146,7 @@ export default function ImportPage() {
               Import <span className="text-[#E50914]">Bank Statement</span>
             </h1>
             <p className="text-gray-400 mt-1">
-              Download your CSV from any Indian bank and import all transactions at once
+              Upload your bank statement (PDF or CSV) — transactions are auto-detected and categorised
             </p>
           </motion.div>
 
@@ -155,7 +171,7 @@ export default function ImportPage() {
                 onClick={() => fileRef.current?.click()}
                 className="cursor-pointer border-2 border-dashed rounded-2xl p-12 flex flex-col items-center gap-4 transition-all"
                 style={{ borderColor: dragging ? "#E50914" : "rgba(255,255,255,0.1)", background: dragging ? "rgba(229,9,20,0.04)" : "rgba(255,255,255,0.01)" }}>
-                <input ref={fileRef} type="file" accept=".csv,text/csv,text/plain" className="hidden" onChange={onFileChange} />
+                <input ref={fileRef} type="file" accept=".csv,.pdf,.xlsx,.xls,.ods,.txt,text/csv,application/pdf,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" className="hidden" onChange={onFileChange} />
                 {uploading ? (
                   <>
                     <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1.2, ease: "linear" }}
@@ -170,11 +186,11 @@ export default function ImportPage() {
                       </svg>
                     </div>
                     <div className="text-center">
-                      <p className="text-lg font-semibold text-white">Drop your CSV here</p>
-                      <p className="text-gray-500 text-sm mt-1">or click to browse</p>
+                      <p className="text-lg font-semibold text-white">Drop your bank statement here</p>
+                      <p className="text-gray-500 text-sm mt-1">or click to browse · any format works</p>
                     </div>
                     <span className="text-xs text-gray-600 px-3 py-1 rounded-full border border-white/10">
-                      CSV files up to 5 MB
+                      PDF · CSV · Excel (.xlsx) · TXT · up to 20 MB
                     </span>
                   </>
                 )}
@@ -201,7 +217,7 @@ export default function ImportPage() {
                 <h3 className="font-bold text-sm mb-3 text-gray-300">Tips for a clean import</h3>
                 <ul className="space-y-2 text-xs text-gray-500">
                   <li className="flex items-center gap-2"><span className="text-[#10B981]">✓</span> Export the <strong className="text-gray-400">last 3–12 months</strong> for rich insights</li>
-                  <li className="flex items-center gap-2"><span className="text-[#10B981]">✓</span> Use the <strong className="text-gray-400">CSV format</strong> not PDF or Excel (XLS)</li>
+                  <li className="flex items-center gap-2"><span className="text-[#10B981]">✓</span> Both <strong className="text-gray-400">PDF and CSV</strong> are supported — Excel (XLS) is not</li>
                   <li className="flex items-center gap-2"><span className="text-[#10B981]">✓</span> Include <strong className="text-gray-400">all columns</strong> (Date, Description, Debit, Credit, Balance)</li>
                   <li className="flex items-center gap-2"><span className="text-[#F59E0B]">✓</span> Categories are <strong className="text-gray-400">auto-detected</strong> — you can edit them before confirming</li>
                 </ul>
