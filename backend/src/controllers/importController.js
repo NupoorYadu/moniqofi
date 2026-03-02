@@ -1,16 +1,18 @@
 const pool = require("../config/db");
 const multer = require("multer");
+const pdfParse = require("pdf-parse");
 
 // ─── Multer: memory storage (no disk writes) ───────────────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max (PDFs can be larger)
   fileFilter: (_req, file, cb) => {
-    const ok = file.mimetype === "text/csv"
-      || file.originalname.endsWith(".csv")
+    const isPDF = file.mimetype === "application/pdf" || file.originalname.toLowerCase().endsWith(".pdf");
+    const isCSV = file.mimetype === "text/csv"
+      || file.originalname.toLowerCase().endsWith(".csv")
       || file.mimetype === "application/vnd.ms-excel"
       || file.mimetype === "text/plain";
-    cb(ok ? null : new Error("Only CSV files are supported"), ok);
+    cb(isPDF || isCSV ? null : new Error("Only CSV or PDF files are supported"), isPDF || isCSV);
   },
 });
 exports.uploadMiddleware = upload.single("file");
@@ -106,9 +108,21 @@ function parseDate(raw) {
     const year = y.length === 2 ? "20" + y : y;
     return new Date(`${year}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`);
   }
+  // MMM DD, YYYY (PhonePe: "Feb 28, 2026")
+  const mp = s.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),?\s+(\d{4})/i);
+  if (mp) {
+    const d = new Date(`${mp[1]} ${mp[2]}, ${mp[3]}`);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  // DD MMM YYYY ("28 Feb 2026")
+  const md2 = s.match(/^(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})/i);
+  if (md2) {
+    const d = new Date(`${md2[2]} ${md2[1]}, ${md2[3]}`);
+    return isNaN(d.getTime()) ? null : d;
+  }
   // Already ISO
   const d = new Date(s);
-  return isNaN(d) ? null : d;
+  return isNaN(d.getTime()) ? null : d;
 }
 
 // ─── Auto-categorizer ──────────────────────────────────────────────────────
@@ -147,6 +161,120 @@ function categorize(description) {
   return "Other";
 }
 
+// ─── PDF Transaction Parser ───────────────────────────────────────────────
+// Handles Indian bank statement PDFs (HDFC, SBI, ICICI, Axis, Kotak etc.)
+async function parsePDF(buffer) {
+  const data = await pdfParse(buffer);
+  const rawText = data.text;
+
+  // Split into lines, preserve non-empty ones
+  const lines = rawText.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter((l) => l.length > 3);
+
+  // Date patterns: DD/MM/YYYY, DD-MM-YYYY, DD MMM YYYY, MMM DD YYYY (PhonePe), YYYY-MM-DD
+  const DATE_RE = [
+    /^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/, // DD/MM/YYYY or DD-MM-YYYY
+    /^(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})/i, // DD MMM YYYY
+    /^((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4})/i, // MMM DD, YYYY (PhonePe)
+    /^(\d{4}-\d{2}-\d{2})/, // ISO
+  ];
+
+  // Amount: ₹30, ₹1,100, 1,23,456.78, 12345.67
+  const AMOUNT_RE = /₹[\d,]+(?:\.\d{1,2})?|[\d,]+\.\d{2}/g;
+
+  const transactions = [];
+
+  // Merge continuation lines: if next line has no date, merge into previous
+  const txnLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const hasDate = DATE_RE.some((re) => re.test(line));
+    if (hasDate) {
+      txnLines.push(line);
+    } else if (txnLines.length > 0) {
+      // Skip lines that are pure Transaction ID / UTR / Paid by (PhonePe detail lines)
+      const isDetailOnly = /^(Transaction\s+ID|UTR\s+No|Paid\s+by|\d{1,2}:\d{2}\s*[ap]m)\b/i.test(line);
+      if (isDetailOnly) {
+        // Still merge so DEBIT/CREDIT keywords and amount are captured if on these lines
+        txnLines[txnLines.length - 1] += " " + line;
+      } else {
+        const hasLeadingAmount = /^[₹\d,]/.test(line);
+        if (!hasLeadingAmount) {
+          txnLines[txnLines.length - 1] += " " + line;
+        }
+      }
+    }
+  }
+
+  for (const line of txnLines) {
+    // Find which date pattern matched
+    let dateStr = null;
+    let afterDate = line;
+    for (const re of DATE_RE) {
+      const m = line.match(re);
+      if (m) { dateStr = m[1]; afterDate = line.slice(m[0].length).trim(); break; }
+    }
+    if (!dateStr) continue;
+
+    // Extract all amounts (strip ₹ and commas)
+    const amounts = [...afterDate.matchAll(AMOUNT_RE)].map((m) => parseFloat(m[0].replace(/[₹,]/g, "")));
+    if (amounts.length === 0) continue;
+
+    // Remove amounts from description to get clean description
+    let desc = afterDate.replace(AMOUNT_RE, " ").replace(/\s+/g, " ").trim();
+    // Strip time (08:27 pm), Dr/Cr markers, DEBIT/CREDIT words, dashes, Transaction IDs
+    desc = desc.replace(/\b\d{1,2}:\d{2}\s*[ap]m\b/gi, "");
+    desc = desc.replace(/\bTransaction\s+ID\s+\S+/gi, "");
+    desc = desc.replace(/\bUTR\s+(?:No\.?)?\s*\S+/gi, "");
+    desc = desc.replace(/\bPaid\s+by\s+\S+/gi, "");
+    desc = desc.replace(/\b(dr|cr|debit|credit)\b/gi, "").replace(/[-–|]+$/, "").trim();
+    desc = desc.replace(/\s+/g, " ").trim();
+    if (!desc) desc = "Imported Transaction";
+
+    // Determine debit vs credit
+    const hasDr = /\bdr\b|withdrawal|debit/i.test(line);
+    const hasCr = /\bcr\b|deposit|credit/i.test(line);
+
+    let debit = 0, credit = 0;
+
+    if (amounts.length === 1) {
+      if (hasCr && !hasDr) credit = amounts[0];
+      else debit = amounts[0];
+    } else if (amounts.length === 2) {
+      // [txn_amount, balance] — use Dr/Cr to classify
+      if (hasCr && !hasDr) credit = amounts[0];
+      else if (hasDr && !hasCr) debit = amounts[0];
+      else debit = amounts[0]; // default to expense if ambiguous
+    } else {
+      // 3 amounts: [debit, credit, balance] — common in HDFC/ICICI
+      debit  = amounts[0];
+      credit = amounts[1];
+      // One of them should be 0 (or very small — some banks put 0.00)
+      if (debit > 0 && credit > 0) {
+        // Both non-zero — try Dr/Cr hint
+        if (hasCr && !hasDr) { debit = 0; }
+        else { credit = 0; }
+      }
+    }
+
+    if (debit === 0 && credit === 0) continue;
+
+    const amount = debit > 0 ? debit : credit;
+    const type   = debit > 0 ? "expense" : "income";
+    const date   = parseDate(dateStr);
+    const category = categorize(desc);
+
+    transactions.push({
+      title: desc.substring(0, 100),
+      amount,
+      type,
+      category,
+      date: date ? date.toISOString() : null,
+    });
+  }
+
+  return transactions;
+}
+
 // ─── Parse rows from CSV using detected bank profile ──────────────────────
 function parseRows(rows, headers, profile) {
   const dateI   = colIdx(headers, profile.cols.date);
@@ -182,12 +310,31 @@ function parseRows(rows, headers, profile) {
 
 // ─── Controller: Preview ──────────────────────────────────────────────────
 // POST /api/transactions/import/preview
-// Parses the CSV and returns rows — doesn't save anything yet
+// Parses the CSV or PDF and returns rows — doesn't save anything yet
 exports.previewImport = async (req, res) => {
   try {
     const buf = req.file?.buffer;
     if (!buf) return res.status(400).json({ message: "No file uploaded" });
 
+    const filename = (req.file?.originalname || "").toLowerCase();
+    const mimetype = req.file?.mimetype || "";
+    const isPDF = mimetype === "application/pdf" || filename.endsWith(".pdf");
+
+    // ── PDF path ─────────────────────────────────────────────────────────
+    if (isPDF) {
+      const parsed = await parsePDF(buf);
+      if (parsed.length === 0) {
+        return res.status(400).json({ message: "No transactions found in PDF. Make sure it's a bank statement with date and amount columns." });
+      }
+      return res.json({
+        bank: "PDF Import",
+        total: parsed.length,
+        headers: [],
+        transactions: parsed,
+      });
+    }
+
+    // ── CSV path ──────────────────────────────────────────────────────────
     // Try UTF-8 first, fall back to latin1
     let text;
     try { text = buf.toString("utf8"); }
@@ -227,7 +374,7 @@ exports.previewImport = async (req, res) => {
     });
   } catch (err) {
     console.error("Import preview error:", err);
-    res.status(500).json({ message: "Failed to parse CSV: " + err.message });
+    res.status(500).json({ message: "Failed to parse file: " + err.message });
   }
 };
 
