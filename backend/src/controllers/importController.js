@@ -103,6 +103,49 @@ function parseAmount(s) {
   return parseFloat(s.replace(/[₹$£€,\s]/g, "")) || 0;
 }
 
+// ======================================================================
+// AUTO CATEGORISATION
+// ======================================================================
+const CATEGORY_RULES = [
+  // Income first — catches "received", "salary", "refund"
+  { cat: "Income",        re: /\b(received|salary|sal|wages|refund|cashback|reward|credit\s*from|interest\s*credit|dividend)\b/i },
+  // Transfer
+  { cat: "Transfer",      re: /\b(transfer|trf|imps|neft|rtgs|upi\s*transfer|send\s*money|p2p|web\s*upi|upi)\b/i },
+  // EMI / Loan
+  { cat: "EMI",           re: /\b(emi|loan|lending|bajaj|hdfc\s*loan|icici\s*loan|equitas|credit\s*card\s*bill|cc\s*bill|kotak\s*emi)\b/i },
+  // Bills / Utilities
+  { cat: "Bills",         re: /\b(electricity|water|gas|bill|bsnl|airtel|jio|vodafone|vi\b|recharge|broadband|internet|wifi|postpaid|prepaid|bescom|msedcl|tpddl|bescom|dth|tata\s*sky|dish\s*tv|sun\s*direct)\b/i },
+  // Investment / Savings
+  { cat: "Investment",    re: /\b(mutual\s*fund|mf|sip|zerodha|groww|kite|smallcase|nps|ppf|fd|fixed\s*deposit|stock|share|coin|demat|upstox|investing|investment)\b/i },
+  // Insurance
+  { cat: "Insurance",     re: /\b(insurance|lic|policy|premium|mediclaim|health\s*ins|motor\s*ins|life\s*ins|star\s*health|hdfc\s*life|max\s*life)\b/i },
+  // Education
+  { cat: "Education",     re: /\b(school|college|university|tuition|course|udemy|coursera|byju|unacademy|vedantu|fee|admission|exam|coaching)\b/i },
+  // Health / Medical
+  { cat: "Health",        re: /\b(hospital|clinic|doctor|pharmacy|medical|medicine|health|apollo|medplus|1mg|netmeds|lab|diagnostic|dental|spa|salon|saloon|beauty|wellness)\b/i },
+  // Entertainment / OTT
+  { cat: "Entertainment", re: /\b(netflix|amazon\s*prime|hotstar|disney|zee5|sonyliv|swiggy|zomato|bms|bookmyshow|inox|pvr|spotify|youtube\s*premium|gaming|google\s*play|apple\s*music|google\b|play\s*store)\b/i },
+  // Transport
+  { cat: "Transport",     re: /\b(uber|ola|rapido|metro|bus|train|flight|irctc|makemytrip|goibibo|yatra|petrol|diesel|fuel|parking|toll|fastag|cab|auto|rickshaw|porter|dunzo)\b/i },
+  // Food & Dining
+  { cat: "Food",          re: /\b(restaurant|cafe|coffee|food|eat|lunch|dinner|breakfast|swiggy|zomato|hotel|dhaba|bakery|pizza|burger|biryani|domino|kfc|mcdonalds|subway|starbucks|chai|juice|canteen|tiffin|snack|mart|grocery|supermarket|bigbasket|blinkit|zepto|dmart|reliance\s*fresh|more\s*retail|spencer|nature\s*basket)\b/i },
+  // Shopping
+  { cat: "Shopping",      re: /\b(amazon|flipkart|myntra|meesho|ajio|nykaa|snapdeal|shopsy|tatacliq|ikea|decathlon|reliance\s*digital|croma|mall|store|shop|purchase|order|delivery|courier|dunzo|zepto|blinkit)\b/i },
+];
+
+function classifyCategory(title, type) {
+  if (!title) return type === "income" ? "Income" : "Other";
+  if (type === "income") {
+    // If it looks like received money, mark as Income
+    if (/\b(received|salary|refund|cashback|reward|interest|dividend)\b/i.test(title)) return "Income";
+  }
+  const lower = title.toLowerCase();
+  for (const rule of CATEGORY_RULES) {
+    if (rule.re.test(lower)) return rule.cat;
+  }
+  return type === "income" ? "Income" : "Other";
+}
+
 // Pick best amount: prefer ₹-prefixed, then decimal, then any
 function extractBestAmount(amounts) {
   if (!amounts || !amounts.length) return null;
@@ -127,7 +170,8 @@ function normaliseTransaction(date, desc, amtStr, typeHint) {
   } else if (CR_KEYWORDS.test(desc)) {
     type = "income";
   }
-  return { date, title: desc.trim(), amount: amt, type };
+  const title = desc.trim();
+  return { date, title, amount: amt, type, category: classifyCategory(title, type) };
 }
 
 // ======================================================================
@@ -287,7 +331,7 @@ function strategyPhonePe(text) {
           const amount = parseFloat(m[2].replace(/,/g, ""));
           const title  = m[3].trim();
           if (amount > 0) {
-            results.push({ date, title, amount, type });
+            results.push({ date, title, amount, type, category: classifyCategory(title, type) });
           }
         }
       }
@@ -373,13 +417,10 @@ function parseXLSX(buffer) {
     const date = parseDate(rawDate);
     const amt  = parseAmount(rawAmt);
     if (!date || !amt) continue;
-    parsed.push({ date, title: rawDesc.trim(), amount: amt, type });
+    parsed.push({ date, title: rawDesc.trim(), amount: amt, type, category: classifyCategory(rawDesc.trim(), type) });
   }
   return parsed.length > 0 ? { parsed, headers: Object.keys(rows[0]) } : null;
 }
-
-// ======================================================================
-// CSV / TXT PARSER
 // ======================================================================
 function parseCSVBuffer(buffer) {
   const text = buffer.toString("utf-8");
@@ -419,7 +460,7 @@ function parseCSVBuffer(buffer) {
     const date = parseDate(rawDate);
     const amt  = parseAmount(rawAmt);
     if (!date || !amt) continue;
-    parsed.push({ date, title: rawDesc.trim(), amount: amt, type });
+    parsed.push({ date, title: rawDesc.trim(), amount: amt, type, category: classifyCategory(rawDesc.trim(), type) });
   }
   return parsed.length > 0 ? { parsed, headers: rows[0] } : null;
 }
