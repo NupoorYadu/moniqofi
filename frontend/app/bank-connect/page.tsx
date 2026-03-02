@@ -349,7 +349,7 @@ export default function BankConnectPage() {
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }}
           >
             {[
-              { step: '1', title: 'You approve', desc: 'A one-time consent screen appears from your bank's trusted AA portal.' },
+              { step: '1', title: 'You approve', desc: "A one-time consent screen appears from your bank's trusted AA portal." },
               { step: '2', title: 'Read-only fetch', desc: 'MoniqoFi receives only your past transactions — never your password.' },
               { step: '3', title: 'Auto-categorised', desc: 'Transactions are instantly categorised and added to your dashboard.' },
             ].map(s => (
