@@ -29,14 +29,14 @@ function parseDate(raw) {
   // DD/MM/YYYY or DD-MM-YYYY
   let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (m) {
-    const d = new Date(+m[3], +m[2]-1, +m[1]);
+    const d = new Date(Date.UTC(+m[3], +m[2]-1, +m[1]));
     return isNaN(d) ? null : d.toISOString().slice(0,10);
   }
 
   // YYYY-MM-DD
   m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (m) {
-    const d = new Date(+m[1], +m[2]-1, +m[3]);
+    const d = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
     return isNaN(d) ? null : d.toISOString().slice(0,10);
   }
 
@@ -44,7 +44,7 @@ function parseDate(raw) {
   m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/);
   if (m) {
     const yr = +m[3] < 50 ? 2000 + +m[3] : 1900 + +m[3];
-    const d = new Date(yr, +m[2]-1, +m[1]);
+    const d = new Date(Date.UTC(yr, +m[2]-1, +m[1]));
     return isNaN(d) ? null : d.toISOString().slice(0,10);
   }
 
@@ -53,7 +53,7 @@ function parseDate(raw) {
   if (m) {
     const mo = MONTH_MAP[m[1].toLowerCase()];
     if (mo !== undefined) {
-      const d = new Date(+m[3], mo, +m[2]);
+      const d = new Date(Date.UTC(+m[3], mo, +m[2]));
       return isNaN(d) ? null : d.toISOString().slice(0,10);
     }
   }
@@ -63,7 +63,7 @@ function parseDate(raw) {
   if (m) {
     const mo = MONTH_MAP[m[2].toLowerCase()];
     if (mo !== undefined) {
-      const d = new Date(+m[3], mo, +m[1]);
+      const d = new Date(Date.UTC(+m[3], mo, +m[1]));
       return isNaN(d) ? null : d.toISOString().slice(0,10);
     }
   }
@@ -73,7 +73,7 @@ function parseDate(raw) {
   if (m) {
     const mo = MONTH_MAP[m[2].toLowerCase()];
     if (mo !== undefined) {
-      const d = new Date(+m[3], mo, +m[1]);
+      const d = new Date(Date.UTC(+m[3], mo, +m[1]));
       return isNaN(d) ? null : d.toISOString().slice(0,10);
     }
   }
@@ -83,7 +83,7 @@ function parseDate(raw) {
   if (m) {
     const mo = MONTH_MAP[m[1].toLowerCase()];
     if (mo !== undefined) {
-      const d = new Date(+m[3], mo, +m[2]);
+      const d = new Date(Date.UTC(+m[3], mo, +m[2]));
       return isNaN(d) ? null : d.toISOString().slice(0,10);
     }
   }
@@ -248,7 +248,57 @@ function strategyGlobalScan(text) {
 }
 
 // ======================================================================
-// PDF PARSER — runs all 3 strategies, picks best
+// STRATEGY 4 — PHONEPE SPECIFIC
+// Format per transaction (each is a block of consecutive lines):
+//   Line A: "Feb 28, 2026"                    ← date
+//   Line B: "08:27 pm"                        ← time (skip)
+//   Line C: "DEBIT₹30Paid to VIZA MART"       ← TYPE + ₹ + AMOUNT + DESC concatenated
+//   Line D: "Transaction ID T260..."           ← noise
+//   Line E: "UTR No. 482..."                   ← noise
+//   Line F: "Paid by" / "Credited to"         ← noise
+//   Line G: "XXXXXX6985"                       ← noise
+// ======================================================================
+function strategyPhonePe(text) {
+  const lines = text.split("\n");
+  const results = [];
+
+  // Match a PhonePe date line: "Feb 28, 2026" / "Mar 2, 2025" etc.
+  const DATE_LINE_RE = /^([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})$/;
+  // Match the combined TYPE₹AMOUNTDescription line
+  const TXN_LINE_RE  = /^(DEBIT|CREDIT)[₹\u20b9]([\d,]+(?:\.\d{1,2})?)(.+)$/;
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    const dateMatch = line.match(DATE_LINE_RE);
+    if (dateMatch) {
+      const mo = MONTH_MAP[dateMatch[1].toLowerCase()];
+      if (mo !== undefined) {
+        const date = new Date(Date.UTC(+dateMatch[3], mo, +dateMatch[2])).toISOString().slice(0, 10);
+        // Next line is time — skip it; look ahead up to 3 lines for the txn line
+        let txnLine = null;
+        for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+          const candidate = lines[j].trim();
+          if (TXN_LINE_RE.test(candidate)) { txnLine = candidate; break; }
+        }
+        if (txnLine) {
+          const m = txnLine.match(TXN_LINE_RE);
+          const type   = m[1] === "CREDIT" ? "income" : "expense";
+          const amount = parseFloat(m[2].replace(/,/g, ""));
+          const title  = m[3].trim();
+          if (amount > 0) {
+            results.push({ date, title, amount, type });
+          }
+        }
+      }
+    }
+    i++;
+  }
+  return results;
+}
+
+// ======================================================================
+// PDF PARSER — runs all strategies, picks best
 // ======================================================================
 async function parsePDF(buffer) {
   let data;
@@ -266,12 +316,13 @@ async function parsePDF(buffer) {
   console.log("[PDF DEBUG] Pages:", data.numpages, "Text length:", text.length);
   console.log("[PDF DEBUG] First 1000 chars:", JSON.stringify(text.slice(0, 1000)));
 
+  const s0 = strategyPhonePe(text);
   const s1 = strategyLineStart(text);
   const s2 = strategyBlockDate(text);
   const s3 = strategyGlobalScan(text);
-  console.log("[PDF DEBUG] strategy results — lineStart:", s1.length, "blockDate:", s2.length, "globalScan:", s3.length);
+  console.log("[PDF DEBUG] strategy results — phonePe:", s0.length, "lineStart:", s1.length, "blockDate:", s2.length, "globalScan:", s3.length);
 
-  const strategies = [s1, s2, s3];
+  const strategies = [s0, s1, s2, s3];
   strategies.sort((a,b) => b.length - a.length);
   return strategies[0] || [];
 }
@@ -383,6 +434,7 @@ exports.debugPDF = async (req, res) => {
     const data = await pdfParse(buf);
     const text = data.text || "";
     // Run all strategies and show counts
+    const s0 = strategyPhonePe(text);
     const s1 = strategyLineStart(text);
     const s2 = strategyBlockDate(text);
     const s3 = strategyGlobalScan(text);
@@ -390,7 +442,8 @@ exports.debugPDF = async (req, res) => {
       pages: data.numpages,
       textLength: text.length,
       rawText: text.slice(0, 3000),
-      strategies: { lineStart: s1.length, blockDate: s2.length, globalScan: s3.length },
+      strategies: { phonePe: s0.length, lineStart: s1.length, blockDate: s2.length, globalScan: s3.length },
+      sample_s0: s0.slice(0, 3),
       sample_s1: s1.slice(0, 3),
       sample_s2: s2.slice(0, 3),
       sample_s3: s3.slice(0, 3),
