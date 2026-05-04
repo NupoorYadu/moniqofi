@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import AnimatedCard, { GlowingOrb } from "../components/AnimatedCard";
 import AnimatedBackground from "../components/AnimatedBackground";
 import { CoachHero } from "../components/PageVisuals";
+import { API_BASE } from "../lib/api";
 
 interface Message {
   role: "user" | "coach";
@@ -26,7 +27,7 @@ const quickQuestions = [
 ];
 
 export default function CoachPage() {
-  const API = process.env.NEXT_PUBLIC_API_URL;
+  const API = API_BASE;
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");

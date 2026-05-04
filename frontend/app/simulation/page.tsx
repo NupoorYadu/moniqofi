@@ -11,6 +11,7 @@ import AnimatedCard, {
 } from "../components/AnimatedCard";
 import AnimatedBackground from "../components/AnimatedBackground";
 import { SimulationHero, SectionDivider } from "../components/PageVisuals";
+import { API_BASE } from "../lib/api";
 import { motion } from "framer-motion";
 import {
   AreaChart,
@@ -61,7 +62,7 @@ interface SimulationData {
 }
 
 export default function Simulation() {
-  const API = process.env.NEXT_PUBLIC_API_URL;
+  const API = API_BASE;
   const [data, setData] = useState<SimulationData | null>(null);
   const [years, setYears] = useState("10");
   const [investmentReturn, setInvestmentReturn] = useState("8");

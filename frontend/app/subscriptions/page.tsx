@@ -8,6 +8,7 @@ import AnimatedCard, { GlowingOrb, StaggerContainer, StaggerItem, FloatingElemen
 import AnimatedBackground from "../components/AnimatedBackground";
 import { SubscriptionHero, SectionDivider } from "../components/PageVisuals";
 import BillingCalendar from "../components/BillingCalendar";
+import { API_BASE } from "../lib/api";
 
 interface Subscription {
   title: string;
@@ -34,7 +35,7 @@ interface SubData {
 }
 
 export default function SubscriptionsPage() {
-  const API = process.env.NEXT_PUBLIC_API_URL;
+  const API = API_BASE;
   const router = useRouter();
   const [data, setData] = useState<SubData | null>(null);
   const [loading, setLoading] = useState(true);

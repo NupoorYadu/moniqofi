@@ -8,6 +8,7 @@ import AnimatedCard, { GlowingOrb, StaggerContainer, StaggerItem, FloatingElemen
 import AnimatedBackground from "../components/AnimatedBackground";
 import { GoalsHero, SectionDivider } from "../components/PageVisuals";
 import { awardXP } from "../lib/xp";
+import { API_BASE } from "../lib/api";
 
 interface Goal {
   id: string;
@@ -39,7 +40,7 @@ interface GoalData {
 }
 
 export default function GoalsPage() {
-  const API = process.env.NEXT_PUBLIC_API_URL;
+  const API = API_BASE;
   const router = useRouter();
   const [data, setData] = useState<GoalData | null>(null);
   const [loading, setLoading] = useState(true);

@@ -2,8 +2,9 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { API_BASE } from "../lib/api";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+const API = API_BASE;
 const CUSTOM_KEY = "moniqofi_custom_prompts";
 
 const PRESET_CATEGORIES = [

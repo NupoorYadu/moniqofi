@@ -1,6 +1,7 @@
 "use client";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+export const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/[\r\n\s]+/g, "") || "http://localhost:5000";
+const API = API_BASE;
 
 class AuthError extends Error {
   constructor(message: string) {

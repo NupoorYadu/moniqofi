@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import MoniqoLogo from "../components/MoniqoLogo";
+import { API_BASE } from "../lib/api";
 
 function CheckEmailContent() {
   const searchParams = useSearchParams();
@@ -29,7 +30,7 @@ function CheckEmailContent() {
     setResent(false);
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/resend-verification`, {
+      const res = await fetch(`${API_BASE}/api/auth/resend-verification`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),

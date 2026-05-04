@@ -32,11 +32,11 @@ const navItems = [
   { href: "/import", label: "Import CSV", iconKey: "upload", desc: "Bank statement" },
 ];
 
-import { logout } from "../lib/api";
+import { logout, API_BASE } from "../lib/api";
 import { useTheme, ACCENT_PRESETS } from "../context/ThemeContext";
 
 // ─── Money Weather ──────────────────────────────────────────────────
-const MW_API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+const MW_API = API_BASE;
 type WeatherState = {
   condition: "sunny" | "partly-cloudy" | "cloudy" | "rainy" | "storm";
   emoji: string; label: string; forecast: string;

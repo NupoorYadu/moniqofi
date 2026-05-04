@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Sidebar from '../components/Sidebar';
+import { API_BASE } from '../lib/api';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type Stage = 'form' | 'waiting' | 'ready' | 'fetching' | 'done' | 'error';
@@ -28,7 +29,7 @@ const BANKS = [
   { name: '+ All Banks', color: '#555', abbr: '…' },
 ];
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+const API = API_BASE;
 
 // ── Component ──────────────────────────────────────────────────────────────────
 export default function BankConnectPage() {

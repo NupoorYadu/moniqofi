@@ -7,6 +7,7 @@ import { motion } from "framer-motion";
 import AnimatedCard, { GlowingOrb } from "../components/AnimatedCard";
 import AnimatedBackground from "../components/AnimatedBackground";
 import { SectionDivider } from "../components/PageVisuals";
+import { API_BASE } from "../lib/api";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer,
 } from "recharts";
@@ -45,7 +46,7 @@ interface EmotionalData {
 }
 
 export default function PersonalityPage() {
-  const API = process.env.NEXT_PUBLIC_API_URL;
+  const API = API_BASE;
   const router = useRouter();
   const [personality, setPersonality] = useState<PersonalityData | null>(null);
   const [emotional, setEmotional] = useState<EmotionalData | null>(null);

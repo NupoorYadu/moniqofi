@@ -11,6 +11,7 @@ import AnimatedCard, {
 import AnimatedBackground from "../components/AnimatedBackground";
 import { motion } from "framer-motion";
 import { awardXP } from "../lib/xp";
+import { API_BASE } from "../lib/api";
 import { SectionDivider } from "../components/PageVisuals";
 import {
   RadarChart,
@@ -46,7 +47,7 @@ interface HealthData {
 }
 
 export default function HealthScore() {
-  const API = process.env.NEXT_PUBLIC_API_URL;
+  const API = API_BASE;
   const [data, setData] = useState<HealthData | null>(null);
   const router = useRouter();
 

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import MoniqoLogo from "../components/MoniqoLogo";
+import { API_BASE } from "../lib/api";
 
 function VerifyEmailContent() {
   const router = useRouter();
@@ -23,7 +24,7 @@ function VerifyEmailContent() {
 
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/auth/verify-email?token=${token}`
+        `${API_BASE}/api/auth/verify-email?token=${token}`
       );
       const data = await res.json();
 

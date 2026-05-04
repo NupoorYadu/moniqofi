@@ -26,7 +26,7 @@ import { useToast } from "../context/ToastContext";
 import CategoryDrillDown from "../components/CategoryDrillDown";
 import AchievementBadges from "../components/AchievementBadges";
 import FinancialDNA from "../components/FinancialDNA";
-
+import { API_BASE } from "../lib/api";
 interface Summary {
   totalIncome: number;
   totalExpense: number;
@@ -68,7 +68,7 @@ function ChartTooltip({ active, payload, label }: any) {
 }
 
 export default function Dashboard() {
-  const API = process.env.NEXT_PUBLIC_API_URL;
+  const API = API_BASE;
   const [summary, setSummary] = useState<Summary | null>(null);
   const [categories, setCategories] = useState<any[]>([]);
   const [title, setTitle] = useState("");

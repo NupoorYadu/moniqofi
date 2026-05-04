@@ -9,6 +9,7 @@ import AnimatedCard, {
   StaggerItem,
 } from "../components/AnimatedCard";
 import AnimatedBackground from "../components/AnimatedBackground";
+import { API_BASE } from "../lib/api";
 import { motion, AnimatePresence } from "framer-motion";
 
 /* ── Lazy-load Plaid Link so the page works even if the package has issues ── */
@@ -63,7 +64,7 @@ interface LinkedAccount {
 type ConnectionStatus = "checking" | "backend-down" | "plaid-not-configured" | "ready";
 
 export default function ConnectedAccountsPage() {
-  const API = process.env.NEXT_PUBLIC_API_URL;
+  const API = API_BASE;
   const router = useRouter();
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
   const [linkToken, setLinkToken] = useState<string | null>(null);
