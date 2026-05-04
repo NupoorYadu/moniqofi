@@ -1,0 +1,11 @@
+# Vercel will only deploy the frontend
+backend/
+mobile/
+k8s/
+docker-compose.yml
+.github/
+.git/
+*.env
+.env.*
+.vercelignore
+DEPLOYMENT.md
