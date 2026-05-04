@@ -11,7 +11,19 @@
 
 ---
 
-## 📋 Table of Contents
+## � Live Deployment
+
+**Frontend (Web App)**: [https://moniqofi-f56l.vercel.app](https://moniqofi-f56l.vercel.app) ✅ **Live on Vercel**
+
+**Backend API**: Coming soon on Railway 🚀
+
+**Demo Credentials**:
+- Email: `priya@moniqofi.com`
+- Password: `Demo@123`
+
+---
+
+## �📋 Table of Contents
 
 - [Overview](#overview)
 - [Features](#features)
